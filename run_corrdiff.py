@@ -2,64 +2,61 @@ import requests
 import numpy as np
 import matplotlib.pyplot as plt
 import os
+import json
 
-# --- CONFIGURATION ---
-# YOUR KEY (Added as requested)
-API_KEY = "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"
-INVOKE_URL = "https://ai.api.nvidia.com/v1/genai/nvidia/corrdiff"
-OUTPUT_DIR = "images"
+# REGENERATE YOUR KEY FIRST!
+API_KEY = os.environ.get("NVIDIA_API_KEY")
 
-# Create output folder
-os.makedirs(OUTPUT_DIR, exist_ok=True)
+# --- THE FIX: USE THE SPECIFIC US MODEL ENDPOINT ---
+# The previous URL was for the generic (Taiwan) model.
+INVOKE_URL = "https://ai.api.nvidia.com/v1/genai/nvidia/corrdiff-us-gefs-hrrr/infer"
 
 headers = {
     "Authorization": f"Bearer {API_KEY}",
-    "Accept": "application/json"
+    "Accept": "application/json",
+    "Content-Type": "application/json"
 }
 
-print(f"Starting batch generation of 12 frames...")
+print("Attempting to hit US CorrDiff Endpoint...")
 
-# Loop for 12 frames (approx 12 hours)
-for i in range(12):
-    # 'time_index' in the Sandbox API usually selects different test cases.
-    # In a real production API, you would pass a specific timestamp.
-    # For this demo, we increment the index to see different test states if available.
-    payload = {
-        "time_index": i, 
-        "channel": "maximum_radar_reflectivity"
-    }
+# We will try just ONE frame first to verify access
+# We use 'time_index' 0 which maps to the first available test case in the US Sandbox
+payload = {
+    "time_index": 0,
+    "channel": "maximum_radar_reflectivity"
+}
 
-    print(f"Requesting Frame {i+1}...")
+try:
+    response = requests.post(INVOKE_URL, headers=headers, json=payload, timeout=60)
+    
+    # DEBUGGING: Print exact error if it fails
+    if response.status_code != 200:
+        print(f"FAILED. Status Code: {response.status_code}")
+        print(f"Response Body: {response.text}")
+        print("\nDIAGNOSIS:")
+        if response.status_code == 404:
+            print("- The 'US' endpoint might be private/enterprise only.")
+        elif response.status_code == 402 or response.status_code == 403:
+            print("- Your free credits are exhausted or don't apply to this model.")
+        else:
+            print("- Invalid payload or server error.")
+        exit(1)
 
-    try:
-        response = requests.post(INVOKE_URL, headers=headers, json=payload, timeout=60)
-        
-        if response.status_code != 200:
-            print(f"  Error {response.status_code}: {response.text}")
-            continue # Skip this frame if it fails
-            
-        data = response.json()
-        raw_values = data['prediction']
-        
-        # Reshape (Assuming 448x448)
-        side = int(np.sqrt(len(raw_values)))
-        grid = np.array(raw_values).reshape((side, side))
+    print("SUCCESS! We got data.")
+    data = response.json()
+    
+    # Process & Plot
+    raw_values = data['prediction']
+    side = int(np.sqrt(len(raw_values)))
+    grid = np.array(raw_values).reshape((side, side))
+    
+    os.makedirs("images", exist_ok=True)
+    plt.figure(figsize=(10, 10))
+    plt.imshow(grid, cmap='inferno', origin='lower')
+    plt.colorbar(label="Reflectivity (dBZ)")
+    plt.title("NVIDIA CorrDiff US (Free Tier)")
+    plt.savefig("images/frame_01.png")
+    print("Saved images/frame_01.png")
 
-        # Plotting
-        plt.figure(figsize=(10, 10))
-        plt.imshow(grid, cmap='inferno', origin='lower')
-        # Add labels
-        plt.colorbar(label="Reflectivity (dBZ)")
-        plt.title(f"NVIDIA CorrDiff Forecast\nFrame +{i}h")
-        
-        # Save as sequential filenames for your HTML viewer
-        filename = f"{OUTPUT_DIR}/frame_{i+1:02d}.png"
-        plt.savefig(filename)
-        plt.close()
-        
-        print(f"  Saved {filename}")
-
-    except Exception as e:
-        print(f"  Failed frame {i}: {e}")
-
-print("Batch complete.")
+except Exception as e:
+    print(f"Script crashed: {e}")

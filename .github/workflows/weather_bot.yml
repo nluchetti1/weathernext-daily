@@ -1,8 +1,8 @@
-name: Update Weather Station
+name: Run NVIDIA CorrDiff
 
 on:
   schedule:
-    - cron: '0 6 * * *' # Runs at 6 AM UTC
+    - cron: '0 6 * * *'
   workflow_dispatch:
 
 permissions:
@@ -23,22 +23,21 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          pip install -r requirements.txt
+          pip install requests matplotlib numpy
 
-      - name: Generate Forecast Frames
-        env:
-          GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
-        run: python plot_weather.py
+      - name: Run NVIDIA Inference Loop
+        # This runs the new script that generates 12 images
+        run: python run_corrdiff.py
 
-      - name: Commit and Push
+      - name: Deploy to Repo
         run: |
           git config --global user.name "WeatherBot"
           git config --global user.email "bot@noreply.github.com"
           
-          # Force add the new images (even if they replaced old ones)
+          # Add all PNGs in the images folder
           git add images/*.png
           git add index.html
           
-          # Commit if changes exist
-          git commit -m "Update forecast maps" || echo "No changes"
+          # Commit
+          git commit -m "Update forecast loop" || echo "No changes"
           git push

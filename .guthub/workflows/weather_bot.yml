@@ -1,20 +1,19 @@
-name: Daily Weather Plot
+name: Update Weather Station
 
 on:
   schedule:
-    # Runs at 6:00 AM UTC every day
-    - cron: '0 6 * * *'
-  workflow_dispatch: # Allows you to run it manually to test
+    - cron: '0 6 * * *' # Runs at 6 AM UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    
-    permissions:
-      contents: write # Needed to push the image back to the repo
 
     steps:
-      - name: Checkout code
+      - name: Checkout Code
         uses: actions/checkout@v4
 
       - name: Set up Python
@@ -22,19 +21,24 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: Install dependencies
+      - name: Install Dependencies
         run: |
           pip install -r requirements.txt
 
-      - name: Generate Weather Map
+      - name: Generate Forecast Frames
         env:
           GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
         run: python plot_weather.py
 
       - name: Commit and Push
         run: |
-          git config --global user.name 'WeatherBot'
-          git config --global user.email 'bot@noreply.github.com'
-          git add forecast.png
-          git commit -m "Update weather map [skip ci]" || echo "No changes to commit"
+          git config --global user.name "WeatherBot"
+          git config --global user.email "bot@noreply.github.com"
+          
+          # Force add the new images (even if they replaced old ones)
+          git add images/*.png
+          git add index.html
+          
+          # Commit if changes exist
+          git commit -m "Update forecast maps" || echo "No changes"
           git push

@@ -1,0 +1,12 @@
+# Ignore python cache
+__pycache__/
+*.pyc
+
+# Ignore environment variables and keys
+.env
+gcp_key.json
+secrets.json
+
+# Ignore large weather data files
+*.zarr
+*.nc

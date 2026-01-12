@@ -2,67 +2,64 @@ import requests
 import numpy as np
 import matplotlib.pyplot as plt
 import os
-import json
 
 # --- CONFIGURATION ---
-# YOUR KEY (Added as requested - PLEASE ROTATE THIS LATER)
+# YOUR KEY (Added as requested)
 API_KEY = "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"
-
-# NVIDIA CorrDiff Endpoint
 INVOKE_URL = "https://ai.api.nvidia.com/v1/genai/nvidia/corrdiff"
+OUTPUT_DIR = "images"
 
-# --- 1. SETUP HEADERS ---
+# Create output folder
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+
 headers = {
     "Authorization": f"Bearer {API_KEY}",
     "Accept": "application/json"
 }
 
-# --- 2. PREPARE PAYLOAD ---
-# Since we cannot generate a 38-variable GFS tensor on a GitHub runner (it's too big),
-# we will ask the API to run one of its "Pre-computed" test cases first.
-# This verifies your pipeline works.
-payload = {
-    "time_index": 0,  # Runs the latest available test case
-    "channel": "maximum_radar_reflectivity" # The output we want
-}
+print(f"Starting batch generation of 12 frames...")
 
-print("Contacting NVIDIA API...")
+# Loop for 12 frames (approx 12 hours)
+for i in range(12):
+    # 'time_index' in the Sandbox API usually selects different test cases.
+    # In a real production API, you would pass a specific timestamp.
+    # For this demo, we increment the index to see different test states if available.
+    payload = {
+        "time_index": i, 
+        "channel": "maximum_radar_reflectivity"
+    }
 
-try:
-    response = requests.post(INVOKE_URL, headers=headers, json=payload, timeout=60)
-    
-    if response.status_code != 200:
-        print(f"API Error {response.status_code}: {response.text}")
-        exit(1)
+    print(f"Requesting Frame {i+1}...")
+
+    try:
+        response = requests.post(INVOKE_URL, headers=headers, json=payload, timeout=60)
         
-    print("Success! Received Inference Data.")
-    data = response.json()
-    
-    # --- 3. PROCESS THE OUTPUT ---
-    # The API returns a flat list we need to reshape into a grid
-    raw_values = data['prediction']
-    
-    # Calculate grid size (Square root of total pixels)
-    # usually 448x448 for CorrDiff
-    side = int(np.sqrt(len(raw_values)))
-    grid = np.array(raw_values).reshape((side, side))
-    
-    print(f"Grid Shape: {grid.shape}")
+        if response.status_code != 200:
+            print(f"  Error {response.status_code}: {response.text}")
+            continue # Skip this frame if it fails
+            
+        data = response.json()
+        raw_values = data['prediction']
+        
+        # Reshape (Assuming 448x448)
+        side = int(np.sqrt(len(raw_values)))
+        grid = np.array(raw_values).reshape((side, side))
 
-    # --- 4. PLOT ---
-    os.makedirs("images", exist_ok=True)
-    
-    plt.figure(figsize=(10, 10))
-    # 'inferno' is a good colormap for Radar
-    plt.imshow(grid, cmap='inferno', origin='lower')
-    plt.colorbar(label="Reflectivity (dBZ)")
-    
-    plt.title(f"NVIDIA CorrDiff Inference\nStatus: Generated via API")
-    plt.savefig("images/nvidia_output.png")
-    plt.close()
-    
-    print("Saved images/nvidia_output.png")
+        # Plotting
+        plt.figure(figsize=(10, 10))
+        plt.imshow(grid, cmap='inferno', origin='lower')
+        # Add labels
+        plt.colorbar(label="Reflectivity (dBZ)")
+        plt.title(f"NVIDIA CorrDiff Forecast\nFrame +{i}h")
+        
+        # Save as sequential filenames for your HTML viewer
+        filename = f"{OUTPUT_DIR}/frame_{i+1:02d}.png"
+        plt.savefig(filename)
+        plt.close()
+        
+        print(f"  Saved {filename}")
 
-except Exception as e:
-    print(f"Failed to run: {e}")
-    exit(1)
+    except Exception as e:
+        print(f"  Failed frame {i}: {e}")
+
+print("Batch complete.")

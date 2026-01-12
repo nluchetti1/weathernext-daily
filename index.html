@@ -1,8 +1,156 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WeatherNext 2 Viewer</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/gif.js/0.2.0/gif.js"></script>
+    <style>
+        body { font-family: 'Segoe UI', sans-serif; background: #f4f4f9; display: flex; flex-direction: column; align-items: center; padding: 20px; }
+        h2 { margin: 5px 0; color: #333; }
+        .controls { margin-bottom: 10px; font-size: 14px; color: #555; display: flex; gap: 15px; align-items: center; }
+        
+        /* TIMELINE BAR */
+        .timeline-container {
+            display: grid;
+            grid-template-columns: repeat(12, 1fr); /* Matches totalFrames */
+            width: 100%; max-width: 1000px; gap: 2px; margin-bottom: 15px;
+        }
+        .time-box {
+            background: #e9ecef; border: 1px solid #ced4da; text-align: center;
+            font-size: 12px; padding: 8px 0; cursor: pointer; transition: all 0.1s;
+        }
+        .time-box:hover { background: #4dabf7; color: white; }
+        .time-box.active { background: #007bff; color: white; font-weight: bold; border-color: #0056b3; }
+
+        /* MAP CONTAINER */
+        #map-container {
+            width: 100%; max-width: 1000px; background: #fff; border: 1px solid #ccc;
+            min-height: 500px; display: flex; justify-content: center; align-items: center;
+        }
+        #forecast-img { width: 100%; height: auto; display: block; }
+        
+        button#download-btn {
+            background-color: #28a745; color: white; border: none; padding: 6px 12px;
+            border-radius: 4px; cursor: pointer; font-weight: bold;
+        }
+        button#download-btn:hover { background-color: #218838; }
+        button#download-btn:disabled { background-color: #ccc; }
+    </style>
+</head>
 <body>
-  <h1>Latest WeatherNext 2 Forecast</h1>
-  <p>Updated daily via GitHub Actions</p>
-  <img src="forecast.png" alt="Latest Weather Map" style="max-width:100%;">
+
+    <h2>WeatherNext 2 Forecast</h2>
+    
+    <div class="controls">
+        <span><strong>Hover/Click</strong> to view | <strong>Arrows</strong> to navigate</span>
+        <button id="download-btn" onclick="generateGIF()">Download GIF</button>
+    </div>
+
+    <div class="timeline-container" id="timeline"></div>
+
+    <div id="map-container">
+        <img id="forecast-img" src="" alt="Loading...">
+    </div>
+
+<script>
+    // CONFIGURATION
+    const totalFrames = 12; // Must match Python loop range
+    const imageDir = "images/";
+    
+    const timeline = document.getElementById('timeline');
+    const imgElement = document.getElementById('forecast-img');
+    const btn = document.getElementById('download-btn');
+    let boxes = [];
+
+    // --- MAIN IMAGE LOADER ---
+    function setImage(index) {
+        // Formats 1 -> "01", 12 -> "12"
+        const idxStr = String(index).padStart(2, '0');
+        const filename = `frame_${idxStr}.png`;
+        
+        imgElement.src = imageDir + filename;
+
+        // Update Timeline UI
+        boxes.forEach(b => b.classList.remove('active'));
+        const activeBox = document.getElementById(`box-${index}`);
+        if(activeBox) activeBox.classList.add('active');
+    }
+
+    // --- BUILD TIMELINE ---
+    for (let i = 1; i <= totalFrames; i++) {
+        let box = document.createElement('div');
+        box.className = 'time-box';
+        box.textContent = `+${i*6}h`; // Label as forecast hours
+        box.id = `box-${i}`;
+        
+        box.addEventListener('mouseenter', () => setImage(i));
+        box.addEventListener('click', () => setImage(i));
+        timeline.appendChild(box);
+        boxes.push(box);
+    }
+
+    // Initialize first frame
+    setImage(1);
+
+    // --- KEYBOARD NAV ---
+    document.addEventListener('keydown', (e) => {
+        let currentSrc = imgElement.src;
+        let match = currentSrc.match(/frame_(\d+)\.png/);
+        if (!match) return;
+        
+        let currentIdx = parseInt(match[1]);
+
+        if (e.key === "ArrowRight") {
+            let next = currentIdx + 1;
+            if (next <= totalFrames) setImage(next);
+        } else if (e.key === "ArrowLeft") {
+            let prev = currentIdx - 1;
+            if (prev >= 1) setImage(prev);
+        }
+    });
+
+    // --- GIF GENERATOR ---
+    async function generateGIF() {
+        btn.disabled = true;
+        btn.textContent = "Loading...";
+        
+        try {
+            const workerResponse = await fetch('https://cdnjs.cloudflare.com/ajax/libs/gif.js/0.2.0/gif.worker.js');
+            const workerBlob = await workerResponse.blob();
+            const workerUrl = URL.createObjectURL(workerBlob);
+
+            const gif = new GIF({
+                workers: 2, quality: 10, workerScript: workerUrl,
+                width: imgElement.naturalWidth, height: imgElement.naturalHeight
+            });
+
+            for (let i = 1; i <= totalFrames; i++) {
+                const idxStr = String(i).padStart(2, '0');
+                const url = `${imageDir}frame_${idxStr}.png`;
+                
+                const img = new Image();
+                img.crossOrigin = "Anonymous";
+                await new Promise(r => { img.onload = r; img.src = url; });
+                gif.addFrame(img, {delay: 250});
+                btn.textContent = `Adding frame ${i}/${totalFrames}...`;
+            }
+
+            gif.on('finished', function(blob) {
+                const link = document.createElement('a');
+                link.href = URL.createObjectURL(blob);
+                link.download = `weathernext_loop.gif`;
+                link.click();
+                btn.textContent = "Download GIF";
+                btn.disabled = false;
+            });
+
+            gif.render();
+        } catch (e) {
+            alert("Error: " + e.message);
+            btn.disabled = false;
+        }
+    }
+</script>
 </body>
 </html>

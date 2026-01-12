@@ -1,0 +1,6 @@
+xarray
+zarr
+gcsfs
+matplotlib
+cartopy
+google-auth

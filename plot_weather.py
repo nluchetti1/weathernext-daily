@@ -4,42 +4,76 @@ import gcsfs
 import xarray as xr
 import matplotlib.pyplot as plt
 import cartopy.crs as ccrs
+import cartopy.feature as cfeature
 
-# 1. Setup Authentication using the Secret
-# We write the secret to a temporary file because Google Auth expects a file path
-service_account_info = json.loads(os.environ['GCP_SA_KEY'])
-with open('gcp_key.json', 'w') as f:
-    json.dump(service_account_info, f)
+# --- AUTHENTICATION ---
+# (Same logic as before to handle local vs GitHub modes)
+key_filename = 'gcp_key.json'
+if os.path.exists(key_filename):
+    print("Using local key.")
+elif 'GCP_SA_KEY' in os.environ:
+    print("Using GitHub Secret.")
+    with open(key_filename, 'w') as f:
+        json.dump(json.loads(os.environ['GCP_SA_KEY']), f)
+else:
+    raise ValueError("No GCP Key found.")
 
-# Connect to Google Cloud Storage
-fs = gcsfs.GCSFileSystem(token='gcp_key.json')
-
-# 2. Access the Data
-# NOTE: Verify the exact bucket path from your Google WeatherNext documentation
-bucket_path = 'gs://weathernext/weathernext_2_0_0/zarr' 
+# --- SETUP & DATA ---
+fs = gcsfs.GCSFileSystem(token=key_filename)
+bucket_path = 'gs://weathernext/weathernext_2_0_0/zarr'
 store = gcsfs.GCSMap(bucket_path, gcs=fs, check=False)
-
-# Open dataset lazily (doesn't download data yet)
 ds = xr.open_zarr(store)
 
-# 3. Slice the Data (CRITICAL STEP)
-# GitHub Actions have limited RAM (~7GB). Do NOT load the whole globe.
-# Select the latest forecast run, one time step, and one variable (e.g., 2m Temperature)
-# Adjust specific variable names based on the dataset metadata (e.g., '2m_temperature', 't2m', etc.)
-subset = ds['2m_temperature'].isel(time=0).sel(
-    latitude=slice(60, 20),  # Slice for North America/Europe (approx)
+# Select variable (2m Temperature) and region (US/Europe slice)
+# Note: WeatherNext usually has 6-hour intervals (0, 6, 12, ... 48)
+subset = ds['2m_temperature'].sel(
+    latitude=slice(60, 20),
     longitude=slice(-130, -60)
 )
 
-# 4. Plotting
-fig = plt.figure(figsize=(12, 8))
-ax = plt.axes(projection=ccrs.PlateCarree())
-ax.coastlines()
-ax.gridlines(draw_labels=True)
+# Create output directory
+os.makedirs("images", exist_ok=True)
 
-# Create the plot
-subset.plot(ax=ax, transform=ccrs.PlateCarree(), cmap='coolwarm', cbar_kwargs={'label': 'Temperature (K)'})
+# --- LOOP & PLOT ---
+# We loop through the first 12 time steps (approx 48-72 hours depending on interval)
+for i in range(12):
+    # Select specific time slice
+    data_slice = subset.isel(time=i)
+    valid_time = data_slice.time.values
+    
+    # Setup Plot
+    fig = plt.figure(figsize=(12, 8))
+    ax = plt.axes(projection=ccrs.PlateCarree())
+    ax.add_feature(cfeature.COASTLINE)
+    ax.add_feature(cfeature.BORDERS, linestyle=':')
+    ax.gridlines(draw_labels=False, color='gray', alpha=0.5)
 
-plt.title(f"WeatherNext 2 Forecast\nValid: {subset.time.values}")
-plt.savefig("forecast.png")
-print("Map generated successfully.")
+    # Plot Data
+    # Convert Kelvin to Celsius for display: .values - 273.15
+    temp_c = data_slice.values - 273.15
+    
+    mesh = ax.pcolormesh(
+        data_slice.longitude, 
+        data_slice.latitude, 
+        temp_c,
+        transform=ccrs.PlateCarree(),
+        cmap='turbo',
+        vmin=-20, vmax=40
+    )
+    
+    plt.colorbar(mesh, label='Temperature (°C)', orientation='vertical', pad=0.02, shrink=0.8)
+    
+    # Add Title with Valid Time
+    # Formats the numpy datetime to a readable string
+    time_str = str(valid_time).split('.')[0] 
+    plt.title(f"WeatherNext 2 Forecast\nValid: {time_str} UTC", loc='left', fontsize=14)
+    plt.title(f"T+{i*6}h", loc='right', fontsize=14, color='blue') # Assuming 6h steps
+
+    # Save with sequential filename (frame_01.png, frame_02.png...)
+    filename = f"images/frame_{i+1:02d}.png"
+    plt.savefig(filename, bbox_inches='tight', dpi=100)
+    plt.close()
+    
+    print(f"Saved {filename}")
+
+print("All frames generated.")

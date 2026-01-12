@@ -4,3 +4,6 @@ gcsfs
 matplotlib
 cartopy
 google-auth
+earthengine-api
+google-auth
+requests

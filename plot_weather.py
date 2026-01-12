@@ -1,79 +1,105 @@
+import ee
 import os
 import json
-import gcsfs
-import xarray as xr
-import matplotlib.pyplot as plt
-import cartopy.crs as ccrs
-import cartopy.feature as cfeature
+import requests
+from google.oauth2.service_account import Credentials
 
-# --- AUTHENTICATION ---
-# (Same logic as before to handle local vs GitHub modes)
-key_filename = 'gcp_key.json'
-if os.path.exists(key_filename):
-    print("Using local key.")
+# --- 1. AUTHENTICATE ---
+SCOPES = ['https://www.googleapis.com/auth/earthengine']
+
+# Handle authentication for both Local (file) and GitHub Actions (Secret env var)
+if os.path.exists('gcp_key.json'):
+    print("Using local key file.")
+    creds = Credentials.from_service_account_file('gcp_key.json', scopes=SCOPES)
 elif 'GCP_SA_KEY' in os.environ:
     print("Using GitHub Secret.")
-    with open(key_filename, 'w') as f:
-        json.dump(json.loads(os.environ['GCP_SA_KEY']), f)
+    info = json.loads(os.environ['GCP_SA_KEY'])
+    creds = Credentials.from_service_account_info(info, scopes=SCOPES)
 else:
-    raise ValueError("No GCP Key found.")
+    raise ValueError("No Service Account Key found. Please set GCP_SA_KEY secret.")
 
-# --- SETUP & DATA ---
-fs = gcsfs.GCSFileSystem(token=key_filename)
-bucket_path = 'gs://weathernext/weathernext_2_0_0/zarr'
-store = gcsfs.GCSMap(bucket_path, gcs=fs, check=False)
-ds = xr.open_zarr(store)
+# Initialize Earth Engine
+ee.Initialize(credentials=creds)
 
-# Select variable (2m Temperature) and region (US/Europe slice)
-# Note: WeatherNext usually has 6-hour intervals (0, 6, 12, ... 48)
-subset = ds['2m_temperature'].sel(
-    latitude=slice(60, 20),
-    longitude=slice(-130, -60)
-)
+# --- 2. CONFIGURATION ---
+# The exact ID from the link you provided
+COLLECTION_ID = 'projects/gcp-public-data-weathernext/assets/weathernext_2_0_0'
+REGION = ee.Geometry.Rectangle([-125, 24, -66, 50]) # Continental US
+OUTPUT_DIR = "images"
 
-# Create output directory
-os.makedirs("images", exist_ok=True)
+os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-# --- LOOP & PLOT ---
-# We loop through the first 12 time steps (approx 48-72 hours depending on interval)
-for i in range(12):
-    # Select specific time slice
-    data_slice = subset.isel(time=i)
-    valid_time = data_slice.time.values
-    
-    # Setup Plot
-    fig = plt.figure(figsize=(12, 8))
-    ax = plt.axes(projection=ccrs.PlateCarree())
-    ax.add_feature(cfeature.COASTLINE)
-    ax.add_feature(cfeature.BORDERS, linestyle=':')
-    ax.gridlines(draw_labels=False, color='gray', alpha=0.5)
+# --- 3. FIND LATEST RUN ---
+print("Searching for latest forecast run...")
+collection = ee.ImageCollection(COLLECTION_ID)
 
-    # Plot Data
-    # Convert Kelvin to Celsius for display: .values - 273.15
-    temp_c = data_slice.values - 273.15
-    
-    mesh = ax.pcolormesh(
-        data_slice.longitude, 
-        data_slice.latitude, 
-        temp_c,
-        transform=ccrs.PlateCarree(),
-        cmap='turbo',
-        vmin=-20, vmax=40
-    )
-    
-    plt.colorbar(mesh, label='Temperature (°C)', orientation='vertical', pad=0.02, shrink=0.8)
-    
-    # Add Title with Valid Time
-    # Formats the numpy datetime to a readable string
-    time_str = str(valid_time).split('.')[0] 
-    plt.title(f"WeatherNext 2 Forecast\nValid: {time_str} UTC", loc='left', fontsize=14)
-    plt.title(f"T+{i*6}h", loc='right', fontsize=14, color='blue') # Assuming 6h steps
+# We sort by 'start_time' (the run time) descending to find the newest one
+# We filter for just one member initially to speed up the "find latest" query
+latest_ref = collection.filter(ee.Filter.eq('ensemble_member', '0')) \
+                       .sort('start_time', False) \
+                       .first()
 
-    # Save with sequential filename (frame_01.png, frame_02.png...)
-    filename = f"images/frame_{i+1:02d}.png"
-    plt.savefig(filename, bbox_inches='tight', dpi=100)
-    plt.close()
-    
-    print(f"Saved {filename}")
+# Extract the exact string for the start time (e.g., "2024-05-20T00:00:00Z")
+latest_start_time = latest_ref.get('start_time').getInfo()
+print(f"Latest available run: {latest_start_time}")
 
-print("All frames generated.")
+# --- 4. PREPARE THE FORECAST ---
+# Now we filter the whole collection to:
+# 1. The specific run we found above
+# 2. A specific ensemble member (using '0' as the control member)
+# 3. Sort by forecast_hour (lead time)
+forecast_series = collection \
+    .filter(ee.Filter.eq('start_time', latest_start_time)) \
+    .filter(ee.Filter.eq('ensemble_member', '0')) \
+    .sort('forecast_hour')
+
+# We'll fetch the first 12 frames (approx 3 days if 6h steps)
+# The documentation says steps are 6 hours.
+count = 12
+forecast_list = forecast_series.toList(count)
+
+# --- 5. VISUALIZATION PARAMETERS ---
+# 2m_temperature is in Kelvin. 
+# 250K = -23C (-9F), 310K = 37C (98F)
+vis_params = {
+    'min': 250,
+    'max': 310,
+    'palette': [
+        '000080', '0000D9', '4000FF', '8000FF', '0080FF', '00FFFF', # Blues/Cold
+        '00FF80', '80FF00', 'DAFF00', 'FFFF00', 'FFF500', 'FFDA00', # Greens/Yellows
+        'FFB000', 'FF7300', 'FF0000', '800000'                        # Reds/Hot
+    ],
+    'bands': ['2m_temperature']
+}
+
+# --- 6. GENERATE IMAGES ---
+print(f"Generating {count} frames...")
+
+for i in range(count):
+    try:
+        # Get image from list (server-side list to client-side object)
+        img = ee.Image(forecast_list.get(i))
+        
+        # Get metadata for the title/filename
+        f_hour = img.get('forecast_hour').getInfo()
+        
+        # Generate the PNG URL
+        url = img.visualize(**vis_params).getThumbURL({
+            'region': REGION,
+            'dimensions': 1000,
+            'format': 'png'
+        })
+        
+        # Download
+        response = requests.get(url)
+        filename = f"{OUTPUT_DIR}/frame_{i+1:02d}.png"
+        
+        with open(filename, "wb") as f:
+            f.write(response.content)
+            
+        print(f"Saved Frame {i+1} (Forecast Hour +{f_hour})")
+        
+    except Exception as e:
+        print(f"Error skipping frame {i}: {e}")
+
+print("Update Complete.")
